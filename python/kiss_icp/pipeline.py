@@ -22,6 +22,7 @@
 # SOFTWARE.
 import contextlib
 import datetime
+import json
 import os
 import time
 from pathlib import Path
@@ -145,6 +146,14 @@ class OdometryPipeline:
 
         np.savetxt(fname=f"{filename}_tum.txt", X=_to_tum_format(poses, timestamps), fmt="%.4f")
 
+    @staticmethod
+    def save_poses_json_format(filename, poses, timestamps):
+        pose_dict = {}
+        for idx in range(len(poses)):
+            pose_dict[timestamps[idx]] = poses[idx].flatten().tolist()
+        with open(f"{filename}.json", "w") as f:
+            json.dump(pose_dict, f)
+
     def _calibrate_poses(self, poses):
         return (
             self._dataset.apply_calibration(poses)
@@ -163,6 +172,7 @@ class OdometryPipeline:
         np.save(filename, poses)
         self.save_poses_kitti_format(filename, poses)
         self.save_poses_tum_format(filename, poses, timestamps)
+        self.save_poses_json_format(filename, poses, timestamps)
 
     def _write_result_poses(self):
         self._save_poses(

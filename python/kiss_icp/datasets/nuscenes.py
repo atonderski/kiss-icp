@@ -39,37 +39,31 @@ class NuScenesDataset:
             sys.exit(1)
 
         # TODO: If someone needs more splits from nuScenes expose this 2 parameters
-        #  nusc_version: str = "v1.0-trainval"
-        #  split: str = "train"
-        nusc_version: str = "v1.0-mini"
-        split: str = "mini_train"
+        nusc_version: str = "v1.0-trainval"
+        # nusc_version: str = "v1.0-mini"
         self.lidar_name: str = "LIDAR_TOP"
 
         # Lazy loading
         from nuscenes.nuscenes import NuScenes
-        from nuscenes.utils.splits import create_splits_logs
 
         self.sequence_id = str(sequence).zfill(4)
 
         self.nusc = NuScenes(dataroot=str(data_dir), version=nusc_version)
-        self.scene_name = f"scene-{self.sequence_id}"
-        if self.scene_name not in [s["name"] for s in self.nusc.scene]:
+        scene_name = f"scene-{self.sequence_id}"
+        if scene_name not in [s["name"] for s in self.nusc.scene]:
             print(f'[ERROR] Sequence "{self.sequence_id}" not available scenes')
             print("\nAvailable scenes:")
             self.nusc.list_scenes()
             sys.exit(1)
+        scene_token = [s["token"] for s in self.nusc.scene if s["name"] == scene_name][0]
 
         # Load nuScenes read from file inside dataloader module
         self.load_point_cloud = importlib.import_module(
             "nuscenes.utils.data_classes"
         ).LidarPointCloud.from_file
 
-        # Get assignment of scenes to splits.
-        split_logs = create_splits_logs(split, self.nusc)
-
         # Use only the samples from the current split.
-        scene_token = self._get_scene_token(split_logs)
-        self.lidar_tokens = self._get_lidar_tokens(scene_token)
+        self.lidar_tokens, self.timestamps = self._get_lidar_tokens(scene_token)
         self.gt_poses = self._load_poses()
 
     def __len__(self):
@@ -96,7 +90,7 @@ class NuScenesDataset:
             )
             ep_record_lid = self.nusc.get("ego_pose", sd_record_lid["ego_pose_token"])
 
-            car_to_velo = transform_matrix(
+            self.car_to_velo = transform_matrix(
                 cs_record_lid["translation"],
                 Quaternion(cs_record_lid["rotation"]),
             )
@@ -105,23 +99,12 @@ class NuScenesDataset:
                 Quaternion(ep_record_lid["rotation"]),
             )
 
-            poses[i:, :] = pose_car @ car_to_velo
+            poses[i:, :] = pose_car @ self.car_to_velo
 
         # Convert from global coordinate poses to local poses
-        first_pose = poses[0, :, :]
-        poses = np.linalg.inv(first_pose) @ poses
+        self.first_pose = poses[0, :, :]
+        poses = np.linalg.inv(self.first_pose) @ poses
         return poses
-
-    def _get_scene_token(self, split_logs: List[str]) -> str:
-        """
-        Convenience function to get the samples in a particular split.
-        :param split_logs: A list of the log names in this split.
-        :return: The list of samples.
-        """
-        scene_tokens = [s["token"] for s in self.nusc.scene if s["name"] == self.scene_name][0]
-        scene = self.nusc.get("scene", scene_tokens)
-        log = self.nusc.get("log", scene["log_token"])
-        return scene["token"] if log["logfile"] in split_logs else ""
 
     def _get_lidar_tokens(self, scene_token: str) -> List[str]:
         # Get records from DB.
@@ -132,7 +115,23 @@ class NuScenesDataset:
         # Make list of frames
         cur_sd_rec = sd_rec
         sd_tokens = [cur_sd_rec["token"]]
+        timestamps = [cur_sd_rec["timestamp"]]
         while cur_sd_rec["next"] != "":
             cur_sd_rec = self.nusc.get("sample_data", cur_sd_rec["next"])
             sd_tokens.append(cur_sd_rec["token"])
-        return sd_tokens
+            timestamps.append(cur_sd_rec["timestamp"])
+        return sd_tokens, timestamps
+
+    def apply_calibration(self, poses):
+        # lid_to_first_lid = poses
+        # first_lid_to_global = self.first_pose
+        # lid_to_global = first_lid_to_global @ lid_to_first_lid
+        # lid_to_ego = self.car_to_velo
+        # ego_to_lid = np.linalg.inv(lid_to_ego)
+        # ego_to_global = ego_to_lid @ lid_to_global
+        # return ego_to_global
+        # convert from local lidar coordinate to global ego coordinate
+        return self.first_pose @ poses @ np.linalg.inv(self.car_to_velo)
+
+    def get_frames_timestamps(self):
+        return self.timestamps
