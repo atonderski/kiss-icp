@@ -211,6 +211,12 @@ def kiss_icp_pipeline(
         callback=version_callback,
         is_eager=True,
     ),
+    remove_dynamic: bool = typer.Option(
+        False,
+        "--remove-dynamic",
+        help="[Optional] Remove dynamic objects from the pointcloud (only for nuscenes)",
+        rich_help_panel="Additional Options",
+    ),
 ):
     # Attempt to guess some common file extensions to avoid using the --dataloader flag
     if not dataloader:
@@ -237,6 +243,7 @@ def kiss_icp_pipeline(
             sequence=sequence,
             topic=topic,
             meta=meta,
+            remove_dynamic=remove_dynamic,
         ),
         config=config,
         deskew=deskew,

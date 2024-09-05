@@ -27,10 +27,10 @@ from pathlib import Path
 from typing import List
 
 import numpy as np
-
+from pyquaternion import Quaternion
 
 class NuScenesDataset:
-    def __init__(self, data_dir: Path, sequence: str, *_, **__):
+    def __init__(self, data_dir: Path, sequence: str, remove_dynamic: bool = False, *_, **__):
         try:
             importlib.import_module("nuscenes")
         except ModuleNotFoundError:
@@ -42,6 +42,7 @@ class NuScenesDataset:
         nusc_version: str = "v1.0-trainval"
         # nusc_version: str = "v1.0-mini"
         self.lidar_name: str = "LIDAR_TOP"
+        self.remove_dynamic = remove_dynamic
 
         # Lazy loading
         from nuscenes.nuscenes import NuScenes
@@ -76,7 +77,51 @@ class NuScenesDataset:
         filename = self.nusc.get("sample_data", token)["filename"]
         pcl = self.load_point_cloud(os.path.join(self.nusc.dataroot, filename))
         points = pcl.points.T[:, :3]
+
+        # Filter out points belonging to dynamic objects
+        if self.remove_dynamic:
+            points = self.remove_dynamic_objects(points, token)
+
         return points.astype(np.float64)
+
+    def remove_dynamic_objects(self, points: np.ndarray, lidar_token: str) -> np.ndarray:
+        sample_data = self.nusc.get('sample_data', lidar_token)
+
+        # Get sensor pose
+        sensor_pose = self.nusc.get('calibrated_sensor', sample_data['calibrated_sensor_token'])
+        sensor_rotation = Quaternion(sensor_pose['rotation'])
+        sensor_translation = np.array(sensor_pose['translation'])
+
+        # Get ego pose
+        ego_pose = self.nusc.get('ego_pose', sample_data['ego_pose_token'])
+        ego_rotation = Quaternion(ego_pose['rotation'])
+        ego_translation = np.array(ego_pose['translation'])
+
+        from nuscenes.utils.geometry_utils import transform_matrix
+
+        # Combined transformation: sensor -> ego -> global
+        sensor_to_global = transform_matrix(ego_translation, ego_rotation).dot(
+            transform_matrix(sensor_translation, sensor_rotation)
+        )
+
+        # Transform points to global coordinate system
+        points_homogeneous = np.hstack((points, np.ones((len(points), 1))))
+        points_global = (sensor_to_global @ points_homogeneous.T).T[:, :3]
+
+        # Get all annotations for this sample
+        boxes = self.nusc.get_boxes(lidar_token)
+
+        # Remove points inside dynamic object boxes
+        mask = np.ones(len(points), dtype=bool)
+        margin = 1e-2
+        for box in boxes:
+            box_points = points_global - box.center
+            box_points = np.dot(Quaternion(matrix=box.rotation_matrix).inverse.rotation_matrix, box_points.T).T
+
+            half_size = box.wlh[[1,0,2]] / 2
+            mask = np.logical_and(mask, np.any(np.abs(box_points) > (half_size + margin), axis=1))
+
+        return points[mask]
 
     def _load_poses(self) -> np.ndarray:
         from nuscenes.utils.geometry_utils import transform_matrix

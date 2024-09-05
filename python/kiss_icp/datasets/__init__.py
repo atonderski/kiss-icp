@@ -20,6 +20,7 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
+import os
 from pathlib import Path
 from typing import Dict, List
 
@@ -47,7 +48,7 @@ def available_dataloaders() -> List:
     import pkgutil
 
     pkgpath = os.path.dirname(__file__)
-    return [name for _, name, _ in pkgutil.iter_modules([pkgpath])]
+    return [name.removesuffix("_dataset") for _, name, _ in pkgutil.iter_modules([pkgpath])]
 
 
 def jumpable_dataloaders():
@@ -66,6 +67,9 @@ def dataloader_types() -> Dict:
     _types = {}
     for dataloader in dataloaders:
         script = importlib.util.find_spec(f".{dataloader}", __name__).origin
+        if not os.path.exists(script):
+            script = importlib.util.find_spec(f".{dataloader}_dataset", __name__).origin
+            dataloader = dataloader + "_dataset"
         with open(script) as f:
             tree = ast.parse(f.read(), script)
             classes = [cls for cls in tree.body if isinstance(cls, ast.ClassDef)]
@@ -76,7 +80,10 @@ def dataloader_types() -> Dict:
 def dataset_factory(dataloader: str, data_dir: Path, *args, **kwargs):
     import importlib
 
-    dataloader_type = dataloader_types()[dataloader]
+    all_types = dataloader_types()
+    if dataloader not in all_types:
+        dataloader = dataloader + "_dataset"
+    dataloader_type = all_types[dataloader]
     module = importlib.import_module(f".{dataloader}", __name__)
     assert hasattr(module, dataloader_type), f"{dataloader_type} is not defined in {module}"
     dataset = getattr(module, dataloader_type)
